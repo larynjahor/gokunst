@@ -39,11 +39,68 @@ type Parser struct {
 	r io.ReadSeeker
 }
 
-func parseObject(l *ps.Lexer) (Object, error) {
+type objectParser struct {
+	sourceReader io.ReaderAt
+	l            *ps.Lexer
+	st           *ds.Stack[ps.Lexem]
+}
+
+func (p *objectParser) ParseObject() (Object, error) {
+	first := p.l.Next()
+	if (first == ps.EOF{}) {
+		return nil, io.EOF
+	}
+
+	second := p.l.Next()
+	if (second == ps.EOF{}) {
+		obj, ok := first.(Object)
+		if ok {
+			return obj, nil
+		}
+
+		return nil, io.EOF
+	}
+
+	third := p.l.Next()
+
+	if (third == ps.EOF{}) {
+		p.unreadLexem(second)
+		p.unreadLexem(first)
+
+		return p.parseDirectObject()
+	}
+
+	_, firstIsNumber := first.(Integer)
+	_, secondIsNumber := second.(Integer)
+
+	p.unreadLexem(third)
+	p.unreadLexem(second)
+	p.unreadLexem(first)
+
+	if !firstIsNumber || !secondIsNumber || third != ps.Keyword("obj") {
+		return p.parseDirectObject()
+	}
+
+	return p.parseIndirectObject()
+}
+
+func (p *objectParser) unreadLexem(l ps.Lexem) {
+	p.st.Push(l)
+}
+
+func (p *objectParser) readLexem() ps.Lexem {
+	if p.st.Empty() {
+		return p.l.Next()
+	}
+
+	return p.st.Pop()
+}
+
+func (p *objectParser) parseDirectObject() (Object, error) {
 	lexems := ds.NewStack[any]()
 
 	for {
-		next := l.Next()
+		next := p.readLexem()
 		if (next == ps.EOF{}) {
 			return nil, io.EOF
 		}
@@ -126,25 +183,25 @@ func parseObject(l *ps.Lexer) (Object, error) {
 	}
 }
 
-func parseIndirectObject(l *ps.Lexer) (Object, error) {
-	if _, ok := l.Next().(Integer); !ok {
+func (p *objectParser) parseIndirectObject() (Object, error) {
+	if _, ok := p.readLexem().(Integer); !ok {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	if _, ok := l.Next().(Integer); !ok {
+	if _, ok := p.readLexem().(Integer); !ok {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	if keyword := l.Next(); keyword != ps.Keyword("obj") {
+	if keyword := p.readLexem(); keyword != ps.Keyword("obj") {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	obj, err := parseObject(l)
+	obj, err := p.parseDirectObject()
 	if err != nil {
 		return nil, err
 	}
 
-	next := l.Next()
+	next := p.readLexem()
 
 	if next == ps.Keyword("endobj") {
 		return obj, nil
@@ -154,7 +211,7 @@ func parseIndirectObject(l *ps.Lexer) (Object, error) {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	obj, err = parseObject(l)
+	obj, err = p.parseDirectObject()
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +221,7 @@ func parseIndirectObject(l *ps.Lexer) (Object, error) {
 		return nil, err
 	}
 
-	stream, ok := l.Next().(ps.Keyword)
+	stream, ok := p.readLexem().(ps.Keyword)
 	if !ok {
 		return nil, ErrInvalidIndirectObject
 	}
@@ -191,7 +248,7 @@ func parseIndirectObject(l *ps.Lexer) (Object, error) {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	return parseObject(l)
+	return p.parseDirectObject()
 }
 
 func (p *Parser) parseXRef() ([][]types.XRefRecord, error) {
