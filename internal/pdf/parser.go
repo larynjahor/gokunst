@@ -2,10 +2,14 @@ package pdf
 
 import (
 	"bytes"
+	"compress/zlib"
 	"fmt"
 	"io"
-	"pdf/internal/ps"
-	"pdf/internal/types"
+	"slices"
+
+	"github.com/larynjahor/gokunst/internal/ds"
+	"github.com/larynjahor/gokunst/internal/ps"
+	"github.com/larynjahor/gokunst/internal/types"
 )
 
 const (
@@ -35,13 +39,94 @@ type Parser struct {
 	r io.ReadSeeker
 }
 
-func (p *Parser) parseObject() (Object, error) {
-	return nil, nil
+func parseObject(l *ps.Lexer) (Object, error) {
+	lexems := ds.NewStack[any]()
+
+	for {
+		next := l.Next()
+		if (next == ps.EOF{}) {
+			return nil, io.EOF
+		}
+
+		if lexems.Empty() {
+			if obj, ok := next.(Object); ok {
+				return obj, nil
+			}
+		}
+
+		if next == ps.Delimiter("]") {
+			arr := types.Array{}
+
+			for {
+				if lexems.Empty() {
+					break
+				}
+
+				top := lexems.Pop()
+				if top == ps.Delimiter("[") {
+					break
+				}
+
+				obj, ok := top.(Object)
+				if !ok {
+					return nil, ErrInvalidObject
+				}
+
+				arr = append(arr, obj)
+			}
+
+			slices.Reverse(arr)
+
+			if lexems.Empty() {
+				return arr, nil
+			}
+
+			next = arr
+		}
+
+		if next == ps.Delimiter(">>") {
+			dict := types.Dict{}
+
+			for {
+				if lexems.Empty() {
+					break
+				}
+
+				top := lexems.Pop()
+				if top == ps.Delimiter("<<") {
+					break
+				}
+
+				val, ok := top.(Object)
+				if !ok {
+					return nil, ErrInvalidObject
+				}
+
+				if lexems.Empty() {
+					return nil, ErrInvalidObject
+				}
+
+				top = lexems.Pop()
+				key, ok := top.(Name)
+				if !ok {
+					return nil, ErrInvalidObject
+				}
+
+				dict[key] = val
+			}
+
+			if lexems.Empty() {
+				return dict, nil
+			}
+
+			next = dict
+		}
+
+		lexems.Push(next)
+	}
 }
 
-func (p *Parser) parseIndirectObject() (Object, error) {
-	l := ps.NewLexer(p.r)
-
+func parseIndirectObject(l *ps.Lexer) (Object, error) {
 	if _, ok := l.Next().(Integer); !ok {
 		return nil, ErrInvalidIndirectObject
 	}
@@ -54,7 +139,7 @@ func (p *Parser) parseIndirectObject() (Object, error) {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	obj, err := p.parseObject()
+	obj, err := parseObject(l)
 	if err != nil {
 		return nil, err
 	}
@@ -69,13 +154,44 @@ func (p *Parser) parseIndirectObject() (Object, error) {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	// TODO parse stream
+	obj, err = parseObject(l)
+	if err != nil {
+		return nil, err
+	}
+
+	decodeConfig, err := types.NewDecodeConfig(obj)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, ok := l.Next().(ps.Keyword)
+	if !ok {
+		return nil, ErrInvalidIndirectObject
+	}
+
+	var buf bytes.Buffer
+
+	switch decodeConfig.Filter {
+	case types.FlateDecode:
+		z, err := zlib.NewReader(bytes.NewBufferString(string(stream)))
+		if err != nil {
+			return nil, err
+		}
+
+		defer z.Close()
+
+		if _, err := io.Copy(&buf, z); err != nil {
+			return nil, err
+		}
+	default:
+		panic("unsupported decode filter")
+	}
 
 	if next != ps.Keyword("endstream") {
 		return nil, ErrInvalidIndirectObject
 	}
 
-	return nil, nil
+	return parseObject(l)
 }
 
 func (p *Parser) parseXRef() ([][]types.XRefRecord, error) {
@@ -161,10 +277,6 @@ func (p *Parser) parseSingleXRef() (*types.XRef, *types.Trailer, error) {
 	}
 
 	trailer := &types.Trailer{}
-
-	for {
-
-	}
 
 	return xref, trailer, nil
 }

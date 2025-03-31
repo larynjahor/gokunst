@@ -1,6 +1,6 @@
 package ps
 
-import "pdf/internal/types"
+import "github.com/larynjahor/gokunst/internal/types"
 
 type Real = types.Real
 type Integer = types.Integer

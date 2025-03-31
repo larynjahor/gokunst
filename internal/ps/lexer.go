@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"log"
 	"strconv"
 )
 
@@ -57,6 +58,8 @@ func (l *Lexer) Next() Lexem {
 	case '/':
 		return l.readName()
 	case '<':
+		log.Println("got hex string start")
+
 		next, err := l.r.ReadByte()
 		if err != nil {
 			return eof

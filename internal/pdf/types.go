@@ -1,6 +1,6 @@
 package pdf
 
-import "pdf/internal/types"
+import "github.com/larynjahor/gokunst/internal/types"
 
 type Object types.Object
 
